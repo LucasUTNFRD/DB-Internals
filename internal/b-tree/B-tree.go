@@ -35,9 +35,10 @@ type funcCmp[K comparable] func(K, K) int
 
 // definition of Btree structure
 type BTree[K comparable, V any] struct {
-	root   *node[K, V] // root node of the B-Tree
-	degree int         // Minimum degree (minimum number of keys) of the B-tree
-	less   funcCmp[K]
+	root *node[K, V] // root node of the B-Tree
+	min  int         // Minimum degree (minimum number of keys) of the B-tree
+	max  int
+	less funcCmp[K]
 }
 
 func New[K comparable, V any](degree int, less funcCmp[K]) *BTree[K, V] {
@@ -57,6 +58,9 @@ func (t *BTree[K, V]) isFull(n *node[K, V]) bool {
 	return len(n.keys) == 2*t.degree-1
 }
 
+func (n *node[K, V]) split(modifiedNode *node[K, V], insertionIndex int) {
+}
+
 func (t *BTree[K, V]) Insert(key K, value V) {
 	if t.root == nil {
 		t.root = newNode[K, V](true)
@@ -65,5 +69,10 @@ func (t *BTree[K, V]) Insert(key K, value V) {
 		return
 	}
 	if t.isFull(t.root) {
+		newRoot := newNode[K, V](false)
+		newRoot.children = append(newRoot.children, t.root)
+		newRoot.split(t.root, 0)
+		t.root = newRoot
 	}
+	t.insertNonFull(t.root, key, value)
 }
