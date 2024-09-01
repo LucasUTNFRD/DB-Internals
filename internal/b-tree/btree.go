@@ -1,5 +1,7 @@
 package btree
 
+import "fmt"
+
 // Why B-Tree
 // 1. keeps keys in sorted order for sequential traversing
 // 2. uses a hierarchical index to minimize the number of disk reads
@@ -30,7 +32,7 @@ type BTree[K comparable, V any] struct {
 // NewBTree creates a new B-tree with the given degree
 func NewBTree[K comparable, V any](order int, less funcCmp[K]) *BTree[K, V] {
 	if order < 2 {
-		panic("Invalid degree, should be at leas 3")
+		panic("Invalid degree, should be at least 3")
 	}
 	tree := new(BTree[K, V])
 	tree.less = less
@@ -46,10 +48,6 @@ type funcCmp[K comparable] func(K, K) int
 
 func (t *BTree[K, V]) isLeaf(node *Node[K, V]) bool {
 	return len(node.children) == 0
-}
-
-func (t *BTree[K, V]) isFull(node *Node[K, V]) bool {
-	return len(node.entries) == t.maxEntries()
 }
 
 func (t *BTree[K, V]) shouldSplit(node *Node[K, V]) bool {
@@ -76,37 +74,17 @@ func (t *BTree[K, V]) middle() int {
 	return (t.order - 1) / 2 // "-1" to favor right nodes to have more keys when splitting
 }
 
+func (t *BTree[K, V]) isEmpty() bool {
+	return t.size == 0
+}
+
 // Less is a convinience function that perfomrs comparsion between two items
 // using hte same "less" function provided to New
 func (t *BTree[K, V]) Less(a, b K) int {
 	return t.less(a, b)
 }
 
-func (t *BTree[K, V]) Put(key K, value V) {
-	entry := &Item[K, V]{Key: key, Value: value}
-	if t.root == nil { // empty tree
-		t.root = &Node[K, V]{entries: []*Item[K, V]{entry}, children: []*Node[K, V]{}}
-		t.size++
-		return
-	}
-	if t.insert(t.root, entry) {
-		t.size++
-	}
-}
-
-//  1.When inserting into a leaf node,
-//    we simply add the key-value pair to the node (maintaining order).
-//  2.When inserting into an internal node,
-//    we need to traverse down to a leaf node where the actual insertion will occur.
-
-func (t *BTree[K, V]) insert(node *Node[K, V], entry *Item[K, V]) bool {
-	if t.isLeaf(node) {
-		return t.insertLeaf(node, entry)
-	}
-	return t.insertInternal(node, entry)
-}
-
-// helper function to avoid repetive code, the goal is search the index where the key is stored
+// helper function to avoid repetive code, the goal is search the index where the key is stored, also use a binary search to perform o(log n) searches
 // and return the correct index and a boolean to indicate that it was found
 // in case that the key is not there we return that is not found and the right place where it should be placed
 func (t *BTree[K, V]) searchKeyIndex(node *Node[K, V], key K) (index int, found bool) {
@@ -125,8 +103,44 @@ func (t *BTree[K, V]) searchKeyIndex(node *Node[K, V], key K) (index int, found 
 	return low, false
 }
 
+func (t *BTree[K, V]) Put(key K, value V) {
+	entry := &Item[K, V]{Key: key, Value: value}
+	if t.root == nil { // empty tree
+		t.root = &Node[K, V]{entries: []*Item[K, V]{entry}, children: []*Node[K, V]{}}
+		t.size++
+		return
+	}
+	if t.insert(t.root, entry) {
+		t.size++
+	}
+}
+
+//	1.When inserting into a leaf node,
+//	  we simply add the key-value pair to the node (maintaining order).
+//	2.When inserting into an internal node,
+//	  we need to traverse down to a leaf node where the actual insertion will occur.
+
+// TODO
+// 1. insertLeaf method
+// 2. insertInternal method
+func (t *BTree[K, V]) insert(node *Node[K, V], entry *Item[K, V]) bool {
+	if t.isLeaf(node) {
+		return t.insertLeaf(node, entry)
+	}
+	return t.insertInternal(node, entry)
+}
+
 func (t *BTree[K, V]) insertInternal(node *Node[K, V], entry *Item[K, V]) bool {
-	return true
+	insertIndex, found := t.searchKeyIndex(node, entry.Key)
+	if found {
+		node.entries[insertIndex] = entry
+		return false
+	}
+	if insertIndex >= len(node.children) {
+		fmt.Printf("insert index:%d,len of node children slice = %d\n", insertIndex, len(node.children))
+		panic("insertIndex equals len of node children slice")
+	}
+	return t.insert(node.children[insertIndex], entry)
 }
 
 func (t *BTree[K, V]) insertLeaf(node *Node[K, V], entry *Item[K, V]) bool {
@@ -157,11 +171,10 @@ func (t *BTree[K, V]) split(node *Node[K, V]) {
 	}
 }
 
-// We find the middle element of the root.
-// We create a new root node with the middle element as its only entry.
-// The old root becomes the left child of the new root.
-// We create a new right child containing all elements after the middle.
-// We update the parent pointers for all affected nodes.
+// For split functions we handle explicitily creating both left and right nodes and then correctly set parent and if needed increase the height of the tree
+// TODO
+// 1. splitRoot() --
+// 2. splitNonRoot() --
 func (t *BTree[K, V]) splitRoot() {
 	middleIndex := t.middle()
 	left := &Node[K, V]{entries: append([]*Item[K, V](nil), t.root.entries[:middleIndex]...)}
@@ -191,17 +204,72 @@ func setParent[K comparable, V any](nodes []*Node[K, V], parent *Node[K, V]) {
 	}
 }
 
-// This happens when any non-root node becomes full during insertion.
-// We find the middle element of the node to be split.
-// We create a new right sibling node.
-// We move all entries and children after the middle to the new right sibling.
-// We move the middle element up to the parent node.
-// We insert the new right sibling into the parent's children array.
-// We update parent pointers for all affected nodes.
-// We recursively call split on the parent node in case it also becomes full.
 func (t *BTree[K, V]) splitNonRoot(node *Node[K, V]) {
+	middle := t.middle()
+	parent := node.parent
+
+	left := &Node[K, V]{
+		entries: append([]*Item[K, V](nil), node.entries[:middle]...),
+		parent:  parent,
+	}
+
+	right := &Node[K, V]{
+		entries: append([]*Item[K, V](nil), node.entries[middle+1:]...),
+		parent:  parent,
+	}
+
+	// Move children from the node to be split into left and right nodes
+	if !t.isLeaf(node) {
+		left.children = append([]*Node[K, V](nil), node.children[:middle+1]...)
+		right.children = append([]*Node[K, V](nil), node.children[middle+1:]...)
+		setParent(left.children, left)
+		setParent(right.children, right)
+	}
+
+	insertPosition, _ := t.searchKeyIndex(parent, node.entries[middle].Key)
+
+	// Insert middle key into parent
+	parent.entries = append(parent.entries, nil)
+	copy(parent.entries[insertPosition+1:], parent.entries[insertPosition:])
+	parent.entries[insertPosition] = node.entries[middle]
+
+	// Set child left of inserted key in parent to the created left node
+	parent.children[insertPosition] = left
+
+	// Set child right of inserted key in parent to the created right node
+	parent.children = append(parent.children, nil)
+	copy(parent.children[insertPosition+2:], parent.children[insertPosition+1:])
+	parent.children[insertPosition+1] = right
+
+	t.split(parent)
 }
 
-// TODO
-// 1. splitRoot() -- done
-// 2. splitNonRoot()
+// searchRecursively searches for a key starting from a specific node recursively
+// It returns the node containing the key (if found), the index of the key in the node, and a boolean indicating if the key was found.
+func (t *BTree[K, V]) searchRecursively(
+	startNode *Node[K, V],
+	key K,
+) (node *Node[K, V], index int, found bool) {
+	if t.isEmpty() {
+		return nil, -1, false
+	}
+	node = startNode
+	for {
+		index, found = t.searchKeyIndex(node, key)
+		if found {
+			return node, index, true
+		}
+		if t.isLeaf(node) {
+			return nil, -1, false
+		}
+		node = node.children[index]
+	}
+}
+
+func (t *BTree[K, V]) Get(key K) (value V, found bool) {
+	node, index, found := t.searchRecursively(t.root, key)
+	if found {
+		return node.entries[index].Value, true
+	}
+	return value, false
+}
