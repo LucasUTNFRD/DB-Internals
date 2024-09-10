@@ -275,18 +275,37 @@ func (t *BTree[K, V]) Get(key K) (value V, found bool) {
 	return value, false
 }
 
+//func (t *BTree[K, V]) Delete(key K) error {
+//	if t.root == nil {
+//		return fmt.Errorf("Tree is empty")
+//	}
+//	node, index, found := t.searchRecursively(t.root, key)
+//	if found {
+//		t.remove(node, index)
+//		t.size--
+//		return nil
+//	}
+//	return fmt.Errorf("Key is not in the tree")
+//}
+
 func (t *BTree[K, V]) Delete(key K) error {
-	//if the tree is empty raise error
-	//if the key is not found also raise error
 	if t.root == nil {
 		return fmt.Errorf("Tree is empty")
 	}
 	node, index, found := t.searchRecursively(t.root, key)
-	if found {
-		t.remove(node, index)
-		t.size--
+	if !found {
+		return fmt.Errorf("Key is not in the tree")
 	}
-	return fmt.Errorf("Key is not in the tree")
+	t.remove(node, index)
+	t.size--
+
+	// If the root node is empty after removal, make its only child the new root
+	if len(t.root.entries) == 0 && len(t.root.children) > 0 {
+		t.root = t.root.children[0]
+		t.root.parent = nil
+	}
+
+	return nil
 }
 
 func (t *BTree[K, V]) remove(node *Node[K, V], index int) {
@@ -295,19 +314,140 @@ func (t *BTree[K, V]) remove(node *Node[K, V], index int) {
 	} else {
 		t.removeFromNonLeaf(node, index)
 	}
-	t.rebalance(node)
+	t.rebalance(node) // reblance if necessary
 }
 
 func (t *BTree[K, V]) removeFromLeaf(node *Node[K, V], index int) {
-	node.entries[index] = nil
-	copy(node.entries[index+1:], node.entries[index:])
-
-	//handle underflow
-	if len(node.entries) < t.minEntries() {
-		//
-	}
+	// Remove the entry at the given index
+	copy(node.entries[index:], node.entries[index+1:])
+	node.entries = node.entries[:len(node.entries)-1]
 }
 
 func (t *BTree[K, V]) removeFromNonLeaf(node *Node[K, V], index int) {
+	if len(node.children[index].entries) >= t.minEntries() { // LST
+		predecessor := t.predecessor(node, index)
+		node.entries[index] = predecessor
+		t.remove(node.children[index], len(node.entries)-1)
+	} else if len(node.children[index+1].entries) >= t.minEntries() { // RST
+		succesor := t.successor(node, index)
+		node.entries[index] = succesor
+		t.remove(node.children[index+1], 0)
+	} else {
+		t.mergeChildren(node, index)
+		key, _ := t.searchKeyIndex(node, node.entries[index].Key)
+		t.remove(node.children[index], key)
+	}
+}
 
+func (t *BTree[K, V]) predecessor(node *Node[K, V], index int) *Item[K, V] {
+	current := node.children[index]
+	for !t.isLeaf(current) {
+		current = current.children[len(current.children)-1]
+	}
+	return current.entries[len(current.entries)-1]
+}
+
+func (t *BTree[K, V]) successor(node *Node[K, V], index int) *Item[K, V] {
+	current := node.children[index+1]
+	for !t.isLeaf(current) {
+		current = current.children[0]
+	}
+	return current.entries[0]
+}
+
+func (t *BTree[K, V]) mergeChildren(parent *Node[K, V], index int) {
+	// primero borro del parent node y acomodo
+	// despues hago el merge entre los nodos izq y derechos
+	// actualizo punteros
+
+	leftChild, rightChild := parent.children[index], parent.children[index+1]
+
+	leftChild.entries = append(leftChild.entries, parent.entries[index])
+	leftChild.entries = append(leftChild.entries, rightChild.entries...)
+	leftChild.children = append(leftChild.children, rightChild.children...)
+
+	setParent(rightChild.children, leftChild)
+
+	copy(parent.entries[index:], parent.entries[index+1:])
+	copy(parent.children[index+1:], parent.children[index+2:])
+	parent.entries = parent.entries[:len(parent.entries)-1]
+	parent.children = parent.children[:len(parent.children)-1]
+}
+
+func (t *BTree[K, V]) rebalance(node *Node[K, V]) {
+	if len(node.entries) >= t.minEntries() {
+		return
+	}
+
+	if node == t.root {
+		return
+	}
+
+	parent := node.parent
+	index := t.getChildIndex(parent, node)
+
+	// Try to borrow from left sibling
+	if index > 0 && len(parent.children[index-1].entries) > t.minEntries() {
+		t.borrowFromLeft(node, index)
+	} else if index < len(parent.children)-1 && len(parent.children[index+1].entries) > t.minEntries() {
+		// Try to borrow from right sibling
+		t.borrowFromRight(node, index)
+	} else if index > 0 {
+		// Merge with left sibling
+		t.mergeChildren(parent, index-1)
+	} else {
+		// Merge with right sibling
+		t.mergeChildren(parent, index)
+	}
+
+	t.rebalance(parent)
+}
+
+func (t *BTree[K, V]) borrowFromLeft(node *Node[K, V], index int) {
+	parent := node.parent
+	leftSibling := parent.children[index-1]
+
+	// Move the separating key from the parent to the beginning of the node
+	node.entries = append([]*Item[K, V]{parent.entries[index-1]}, node.entries...)
+
+	// Move the last key from the left sibling to the parent
+	parent.entries[index-1] = leftSibling.entries[len(leftSibling.entries)-1]
+	leftSibling.entries = leftSibling.entries[:len(leftSibling.entries)-1]
+
+	if !t.isLeaf(node) {
+		// Move the last child pointer from the left sibling to the beginning of the node
+		node.children = append(
+			[]*Node[K, V]{leftSibling.children[len(leftSibling.children)-1]},
+			node.children...)
+		leftSibling.children = leftSibling.children[:len(leftSibling.children)-1]
+		node.children[0].parent = node
+	}
+}
+
+func (t *BTree[K, V]) borrowFromRight(node *Node[K, V], index int) {
+	parent := node.parent
+	rightSibling := parent.children[index+1]
+
+	// Move the separating key from the parent to the end of the node
+	node.entries = append(node.entries, parent.entries[index])
+
+	// Move the first key from the right sibling to the parent
+	parent.entries[index] = rightSibling.entries[0]
+	rightSibling.entries = rightSibling.entries[1:]
+
+	if !t.isLeaf(node) {
+		// Move the first child pointer from the right sibling to the end of the node
+		node.children = append(node.children, rightSibling.children[0])
+		rightSibling.children = rightSibling.children[1:]
+		node.children[len(node.children)-1].parent = node
+	}
+}
+
+func (t *BTree[K, V]) getChildIndex(parent *Node[K, V], child *Node[K, V]) int {
+	for i, c := range parent.children {
+		if c == child {
+			return i
+		}
+	}
+	return -1
 }
