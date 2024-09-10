@@ -295,6 +295,7 @@ func (t *BTree[K, V]) remove(node *Node[K, V], index int) {
 	} else {
 		t.removeFromNonLeaf(node, index)
 	}
+	t.rebalance(node)
 }
 
 func (t *BTree[K, V]) removeFromLeaf(node *Node[K, V], index int) {
